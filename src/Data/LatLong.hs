@@ -1,8 +1,14 @@
 {-# LANGUAGE OverloadedStrings, ScopedTypeVariables, ViewPatterns, PatternSynonyms #-}
+
+{-|
+Module: Data.LatLong
+Description: Spatially indexed type for geographic coordinates.
+-}
+
 module Data.LatLong (
-    LatLong(..),
+    LatLong(..), lat, long,
     geoDistance,
-    latLongZCover,
+    --latLongZCover,
 ) where
 
 import Data.Morton
@@ -97,7 +103,7 @@ geoDistance (LatLong theta1 phi1) (LatLong theta2 phi2) = earthRadius * sigma wh
 
 
 
-
+{-
 latLongZCover :: LatLong -> Double -> [Interval LatLong]
 latLongZCover (LatLong theta phi) r = (fmap.fmap) LatLongZ mranges where
     plusminus a b = (a-b,a+b)
@@ -106,3 +112,4 @@ latLongZCover (LatLong theta phi) r = (fmap.fmap) LatLongZ mranges where
     LatLongZ (MortonPair lata longa) = LatLong thetaa phia
     LatLongZ (MortonPair latb longb) = LatLong thetab phib
     mranges = mortonCover (Interval lata latb) (Interval longa longb)
+-}
