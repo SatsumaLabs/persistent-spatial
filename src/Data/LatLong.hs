@@ -6,24 +6,33 @@ Description: Spatially indexed type for geographic coordinates.
 -}
 
 module Data.LatLong (
-    LatLong(..), lat, long,
-    geoDistance,
-    --latLongZCover,
+    LatLong(LatLongZ, LatLong), lat, long,
+    earthRadius, geoDistance,
+    LatLongTile, latLongTileInterval,
+    latLongCover, latLongSquareCover, withinTileSet
 ) where
 
 import Data.Morton
 import Data.Aeson
 import Data.Monoid
+import Data.Proxy
 import Control.Monad
 import Control.Lens (Lens', Iso', iso)
-import Data.Word (Word32)
+import Data.Word (Word32, Word64)
 import Debug.Trace
 import Web.HttpApiData
 import qualified Data.Text as T
 import Numeric
+import Database.Persist.Sql
 
-
-newtype LatLong = LatLongZ Morton deriving (Eq, Ord)
+-- | Type for storing geographic coordinates that can be spatially indexed.
+-- Each coordinate is reperesented as as 32-bit fixed point value and is also accessible as a Double through a pattern synonym.
+-- Order follows a Morton Z-order curve which can be used to search a database by tiles.
+-- This works with any database capable of storing and indexing @Word64@ (and it only uses those values fitting in s 64 bit signed integer)
+newtype LatLong =
+    -- | Underlying reperesentation and source of ordering for indexing
+    LatLongZ Morton
+    deriving (Eq, Ord)
 
 two32f :: Double
 two32f = 2 ^ (32 :: Int)
@@ -41,10 +50,10 @@ latLongCoords (LatLongZ (MortonPair theta' phi')) = (theta,phi) where
     theta = (fromIntegral theta' * 360 / two32f) - 90
     phi = (fromIntegral phi' * 360 / two32f) - 180
 
+-- | Pattern for accessing a coordinates as doubles
 pattern LatLong :: Double -> Double -> LatLong
 pattern LatLong theta phi <- (latLongCoords -> (theta,phi)) where
     LatLong theta phi = makeLatLong theta phi
-
 {-# COMPLETE LatLong #-}
 
 
@@ -77,13 +86,20 @@ instance Show LatLong where
         , showFFloat (Just 5) (abs phi) []
         , if phi >= 0 then " E" else " W" ]
 
+instance PersistField LatLong where
+    toPersistValue (LatLongZ (Morton x)) = toPersistValue x
+    fromPersistValue = fmap (LatLongZ . Morton) . fromPersistValue
+instance PersistFieldSql LatLong where
+    sqlType _ = sqlType (Proxy :: Proxy Word64)
+
+
 
 lat :: Lens' LatLong Double
 lat f (LatLong theta phi) = fmap (\theta' -> LatLong theta' phi) (f theta)
 long :: Lens' LatLong Double
 long f (LatLong theta phi) = fmap (\phi' -> LatLong theta phi') (f phi)
 
-
+-- | Earth's average radius in meters
 earthRadius :: Double
 earthRadius = 6371.2e3
 
@@ -92,7 +108,7 @@ degs x = x * pi / 180
 sindeg = sin . rads
 cosdeg = cos . rads
 
--- | Calculate distance between two points using the Haversine formula (up to 0.5% due to the eaaumption of a spherical Earth).
+-- | Calculate distance between two points using the Haversine formula (up to 0.5% due to the assumption of a spherical Earth).
 -- Distance is returned in metres.
 geoDistance :: LatLong -> LatLong -> Double
 geoDistance (LatLong theta1 phi1) (LatLong theta2 phi2) = earthRadius * sigma where
@@ -100,16 +116,42 @@ geoDistance (LatLong theta1 phi1) (LatLong theta2 phi2) = earthRadius * sigma wh
     hav = havdelta theta1 theta2 + (cosdeg theta1 * cosdeg theta2 * havdelta phi1 phi2)
     sigma = 2 * asin (sqrt hav)
 
+-- | Calculates the corner coordinates of a square with a given center and radius (in meters).
+-- Based on the Mercator projjection thus has distortion at the poles.
+geoSquare :: LatLong -> Double -> (LatLong, LatLong)
+geoSquare (LatLong theta phi) r = let
+    dtheta = degs (r / earthRadius)
+    dphi = degs (r / earthRadius / cosdeg theta)
+    se = LatLong (theta - dtheta) (phi - dphi)
+    nw = LatLong (theta + dtheta) (phi + dphi)
+    in (se,nw)
 
 
 
-{-
-latLongZCover :: LatLong -> Double -> [Interval LatLong]
-latLongZCover (LatLong theta phi) r = (fmap.fmap) LatLongZ mranges where
-    plusminus a b = (a-b,a+b)
-    (thetaa,thetab) = plusminus theta $ degs (r / earthRadius)
-    (phia, phib) = plusminus phi $ degs (r / earthRadius / cosdeg theta)
-    LatLongZ (MortonPair lata longa) = LatLong thetaa phia
-    LatLongZ (MortonPair latb longb) = LatLong thetab phib
-    mranges = mortonCover (Interval lata latb) (Interval longa longb)
--}
+
+
+-- | Reperssents a LatLong tile, which is both a rectangle and a contoguous interval in the ordering.
+newtype LatLongTile = LatLongTile MortonTile deriving (Eq, Read, Show)
+
+-- | Gets the corners of a tile, which are also the bounds of its interval
+latLongTileInterval :: LatLongTile -> Interval LatLong
+latLongTileInterval (LatLongTile t) = fmap LatLongZ (mortonTileBounds t)
+
+-- | Cover a rectangle (defined by its corners) by 8 tiles
+latLongCover :: LatLong -> LatLong -> [LatLongTile]
+latLongCover se nw = let
+    LatLong s e = se
+    LatLong n w = nw
+    LatLongZ y = se
+    LatLongZ x = nw
+    in if s > n then [] else fmap LatLongTile (mortonTileCoverTorus 3 x y)
+
+-- | Cover a square (defined by its center and radius) by 8 tiles
+latLongSquareCover :: LatLong -> Double -> [LatLongTile]
+latLongSquareCover c r = uncurry latLongCover $ geoSquare c r
+
+-- | Persistent filter to query results within a tile set
+withinTileSet :: (EntityField row LatLong) -> [LatLongTile] -> Filter row
+withinTileSet field tiles = let
+    tfilter tile = let Interval a b = latLongTileInterval tile in FilterAnd [field >=. a, field <=. b]
+    in FilterOr $ fmap tfilter tiles

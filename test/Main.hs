@@ -79,7 +79,7 @@ prop_morton_split_8 rect = let
     ratio = mortonRectExpansion 3 rect
     in collect ratio $ mortonRectAspect rect < 8 ==> (ratio >= 1 && ratio < 17)
 
-bad_square = MortonRect (Morton 0x0fffFfffFfffFfff) (Morton 0xc000000000000000)
+badSquare = MortonRect (Morton 0x0fffFfffFfffFfff) (Morton 0xc000000000000000)
 
 main :: IO ()
 main = hspec $ do
@@ -91,6 +91,6 @@ main = hspec $ do
     describe "Morton Cover" $ do
         prop "parsing works" prop_morton_tile_parse
         prop "tile bounds size matches mask value" prop_morton_tile_bounds
-        it   "pathological square expands at most 11-fold in 4-division" $ mortonRectExpansion 2 bad_square `shouldSatisfy` (< 11)
-        it   "pathological square expands at most 6-fold in 8-division" $ mortonRectExpansion 3 bad_square `shouldSatisfy` (< 6)
+        it   "pathological square expands at most 11-fold in 4-division" $ mortonRectExpansion 2 badSquare `shouldSatisfy` (< 11)
+        it   "pathological square expands at most 6-fold in 8-division" $ mortonRectExpansion 3 badSquare `shouldSatisfy` (< 6)
         modifyMaxSuccess (const 100000) $ prop "rectangle expansion in 8 tile coder (eccentricity limit 8)" prop_morton_split_8

@@ -1,7 +1,7 @@
 name:                persistent-spatial
 version:             0.1.0.0
 -- synopsis:
--- description:
+description:         A type for storing geographic coordinates that can be used with any database which supports Word64.
 homepage:            https://github.com/george-steel/persistent-spatial#readme
 license:             MIT
 license-file:        LICENSE
@@ -23,6 +23,7 @@ library
                      , lens
                      , http-api-data
                      , text
+                     , persistent
   default-language:    Haskell2010
 
 
