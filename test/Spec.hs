@@ -6,13 +6,17 @@ module Main where
 import Test.Hspec
 import Test.QuickCheck
 import Test.Hspec.QuickCheck
-import Data.Morton
 import Data.Word
 import Control.Lens
 import Data.Maybe
 import Numeric
 import Data.List
 import Text.Read
+import Data.Aeson
+import Web.HttpApiData
+
+import Data.Morton
+import Data.LatLong
 
 instance (Arbitrary Morton) where
     arbitrary = fmap Morton arbitrary
@@ -57,16 +61,18 @@ prop_morton_tile_bounds :: MortonRect -> Bool
 prop_morton_tile_bounds rect = let
     t@(MortonTile _ n) = enclosingMortonTile rect
     s = intervalSizeMorton (mortonTileBounds t)
+    sr = mortonRectSize (mortonTileRect t)
     s' = 2 ^ (64 - n)
-    in s == s'
+    in s == s' && sr == s'
+
 
 mortonRectAspect :: MortonRect -> Double
 mortonRectAspect (MortonRectSides ix iy) = let
-    dx = fromIntegral (intervalSize ix)
-    dy = fromIntegral (intervalSize iy)
-    in max dx dy / min dx dy
+    dx = intervalSize ix
+    dy = intervalSize iy
+    in fromIntegral (max dx dy) / fromIntegral (min dx dy)
 
-mortonRectExpansion :: Int -> MortonRect -> Word64
+mortonRectExpansion :: Int -> MortonRect -> Integer
 mortonRectExpansion subdiv rect = let
     tiles = mortonTileCover subdiv rect
     rsize = mortonRectSize rect
@@ -81,16 +87,69 @@ prop_morton_split_8 rect = let
 
 badSquare = MortonRect (Morton 0x0fffFfffFfffFfff) (Morton 0xc000000000000000)
 
+
+
+instance (Arbitrary LatLong) where
+    arbitrary = LatLong <$> choose (-90,90) <*> choose (-180,180)
+
+prop_latlong_json :: LatLong -> Bool
+prop_latlong_json p = let
+    mp = decode (encode p)
+    in mp == Just p
+
+prop_latlong_http :: LatLong -> Bool
+prop_latlong_http p = let
+    mp = parseUrlPiece (toUrlPiece p)
+    in mp == Right p
+
+prop_geo_triangle :: LatLong -> LatLong -> LatLong -> Bool
+prop_geo_triangle a b c = let
+    ttest x y z = geoDistance x y + geoDistance y z >= geoDistance x z
+    in ttest a b c && ttest b c a && ttest c a b
+
+pctError :: Double -> Double -> Double
+pctError ref samp = abs (samp - ref) / ref
+
+prop_square_corner_dist :: Property
+prop_square_corner_dist = let
+    gen = (,) <$> choose (10,200000) <*> (LatLong <$> choose (-70,70) <*> choose (-180,180))
+    test (r,p) = let
+        d = 2*r
+        (LatLong s w, LatLong n e) = geoSquare p r
+        laterr =  max (pctError d (geoDistance (LatLong n w) (LatLong s w)))
+                      (pctError d (geoDistance (LatLong n e) (LatLong s e)))
+        --laterrbin :: Int = max (-9) (ceiling (logBase 10 laterr))
+        longerr = max (pctError d (geoDistance (LatLong n w) (LatLong n e)))
+                      (pctError d (geoDistance (LatLong s w) (LatLong s e)))
+        longerrbin = minimum [x | x <- [100,10,5,2,1,0.5,0.1,0.01], x > longerr * 100]
+        in collect longerrbin . counterexample (show (laterr,longerr)) $ laterr < 1e-3 && longerr < 0.1
+    in forAll gen test
+
+prop_tiles_cover_points :: Property
+prop_tiles_cover_points = let
+    gen = (,) <$> choose (10,1000000) <*> (LatLong <$> choose (-70,70) <*> choose (-180,180))
+    test (r,p) = let
+        (sw@(LatLong s w), ne@(LatLong n e)) = geoSquare p r
+        tiles = latLongTileCover sw ne
+        pgen = LatLong <$> choose (s,n) <*> choose (w,e)
+        in forAll pgen (`tileSetElem` tiles)
+    in forAll gen test
+
 main :: IO ()
-main = hspec $ do
-    describe "Morton" $ do
+main = hspec . modifyMaxSuccess (const 10000) $ do
+    describe "Data.Morton" $ do
         prop "interleaving is reversible" prop_morton_isom
         prop "deinterleaving is reversible" prop_morton_isom_rev
-        prop "parsing works" prop_morton_parse
+        prop "point Read instance works" prop_morton_parse
         prop "rectangle intersection mathes interval intersection" prop_morton_intersect
-    describe "Morton Cover" $ do
-        prop "parsing works" prop_morton_tile_parse
-        prop "tile bounds size matches mask value" prop_morton_tile_bounds
+        prop "tile Read instance works" prop_morton_tile_parse
+        prop "tile size (both definitions) matches mask value" prop_morton_tile_bounds
         it   "pathological square expands at most 11-fold in 4-division" $ mortonRectExpansion 2 badSquare `shouldSatisfy` (< 11)
         it   "pathological square expands at most 6-fold in 8-division" $ mortonRectExpansion 3 badSquare `shouldSatisfy` (< 6)
-        modifyMaxSuccess (const 100000) $ prop "rectangle expansion in 8 tile coder (eccentricity limit 8)" prop_morton_split_8
+        prop "rectangle expansion in 8 tile coder (eccentricity limit 8, floored expansion collected)" prop_morton_split_8
+    describe "Data.LatLong" $ do
+        prop "Aeson instances work" prop_latlong_json
+        prop "HttpApiData instances work" prop_latlong_http
+        prop "geoDistance obeys triangle inequality" prop_geo_triangle
+        prop "geoSquare corners within tolerance (% error collected), 10m < r < 200km, 70S < lat < 70N" prop_square_corner_dist
+        prop "tile covers contain all points in square" prop_tiles_cover_points

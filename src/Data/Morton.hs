@@ -12,7 +12,7 @@ Bit interleaving code is originally from the documentation of Data.Sparse by Edw
 
 module Data.Morton (
     Morton(Morton,MortonPair),
-    Interval(..), intersectInterval, intervalSize, intervalSizeMorton,
+    Interval(..), intersectInterval, intervalElem, intervalSize, intervalSizeMorton,
     MortonRect(MortonRect,MortonRectSides), mortonRectBounds, intersectMorton, mortonRectSize,
     MortonTile(..), mortonTileBounds, mortonTileRect, enclosingMortonTile, splitMortonTile, trimMortonTile,
     mortonTileCover, mortonTileCoverTorus,
@@ -36,7 +36,7 @@ zeropad :: Int -> String -> String
 zeropad n s = replicate (n - length s) '0' ++ s
 
 -- | Type implementing a Morton Z-Order Curve.
--- Stores two @Word32@ values with bits interleaved for spatial indexing by rectangular tiles which form contiguous intervals.
+-- Stores two 'Word32' values with bits interleaved for spatial indexing by rectangular tiles which form contiguous intervals.
 newtype Morton = Morton Word64 deriving (Eq, Ord, Enum)
 instance (Show Morton) where
     show (Morton m) = "Z" <> zeropad 16 (showHex m [])
@@ -47,11 +47,10 @@ readMorton :: ReadP Morton
 readMorton = char 'Z' >> fmap Morton readHexP
 
 
--- interleaves the bits of two integers by performing AH,AL,BH,BL -> AH,BH,AL,BL then recursing on H and L portions
+-- interleaves the bits of two integers by performing AH,AL,BH,BL -> AH,BH,AL,BL then recursing on H and L portions in SIMD fashion
 interleaveM :: Word32 -> Word32 -> Morton
 interleaveM !x !y = Morton k5 where
     k0 = unsafeShiftL (fromIntegral x) 32 .|. fromIntegral y
-    -- interleaves the bits of two integers by performing AH,AL,BH,BL -> AH,BH,AL,BL then recursing on H and L portions in SIMD fashion
     k1 = unsafeShiftL (k0 .&. 0x00000000FFFF0000) 16  .|. unsafeShiftR k0 16 .&. 0x00000000FFFF0000  .|. k0 .&. 0xFFFF00000000FFFF
     k2 = unsafeShiftL (k1 .&. 0x0000FF000000FF00) 8   .|. unsafeShiftR k1 8  .&. 0x0000FF000000FF00  .|. k1 .&. 0xFF0000FFFF0000FF
     k3 = unsafeShiftL (k2 .&. 0x00F000F000F000F0) 4   .|. unsafeShiftR k2 4  .&. 0x00F000F000F000F0  .|. k2 .&. 0xF00FF00FF00FF00F
@@ -75,7 +74,7 @@ pattern MortonPair x y <- (uninterleaveM -> (x,y)) where
 
 
 -- | Type for closed intervals. The second field should be greater than the first.
-data Interval a = Interval a a deriving (Eq, Show, Functor)
+data Interval a = Interval a a deriving (Eq, Show, Read, Functor)
 
 -- | Returns intersection of two intervals, or Nothing if they do not overlap
 intersectInterval :: Ord a => Interval a -> Interval a -> Maybe (Interval a)
@@ -87,19 +86,22 @@ intersectInterval (Interval a b) (Interval a' b') = do
     guard (x <= y)
     return $ Interval x y
 
--- | returns the size of an integer interval
-intervalSize :: (Integral a) => Interval a -> a
-intervalSize (Interval a b) = b - a + 1
+intervalElem :: (Ord a) => a -> Interval a -> Bool
+intervalElem x (Interval a b) = a <= x && x <= b
 
--- | Returns the size of a Morton interval. This is necesary as Morton is too large to use the Enum typeclass (which has a 63 bit limit for using sizes)
-intervalSizeMorton :: Interval Morton -> Word64
-intervalSizeMorton (Interval (Morton a) (Morton b)) = fromIntegral (b - a + 1)
+-- | returns the size of an integer interval
+intervalSize :: (Integral a) => Interval a -> Integer
+intervalSize (Interval a b) = fromIntegral b - fromIntegral a + 1
+
+-- | Returns the size of a Morton interval. This is necesary as Morton is too large to use the Enum typeclass (which has a 63 bit limit for its size functions)
+intervalSizeMorton :: Interval Morton -> Integer
+intervalSizeMorton (Interval (Morton a) (Morton b)) = fromIntegral b - fromIntegral a + 1
 
 
 -- | Type for retangles in Morton space reperesented by upper-left and lower-right corners
-data MortonRect = MortonRect {-# UNPACK #-} !Morton {-# UNPACK #-} !Morton deriving (Eq, Show)
+data MortonRect = MortonRect {-# UNPACK #-} !Morton {-# UNPACK #-} !Morton deriving (Eq, Show, Read)
 
--- | returns x,y bounds of rectangle
+-- | returns x,y bounds of a rectangle
 mortonRectBounds :: MortonRect -> (Interval Word32, Interval Word32)
 mortonRectBounds (MortonRect (MortonPair x y) (MortonPair x' y')) = (Interval x x', Interval y y')
 
@@ -121,10 +123,10 @@ intersectMorton (MortonRect a1 b1) (MortonRect a2 b2) = mint where
     by = min (sely b1) (sely b2)
     mint = if (ax <= bx) && (ay <= by) then Just (MortonRect (Morton $ ax .|. ay) (Morton $ bx .|. by)) else Nothing
 
--- | retuens area of rectangle
-mortonRectSize :: MortonRect -> Word64
+-- | returns area of rectangle
+mortonRectSize :: MortonRect -> Integer
 mortonRectSize (MortonRect (MortonPair ax ay) (MortonPair bx by)) =
-    fromIntegral (bx-ax+1) * fromIntegral (by-ay+1)
+    (fromIntegral bx - fromIntegral ax + 1) * (fromIntegral by - fromIntegral ay + 1)
 
 
 -- | Type for a tile in Morton space, which is a special type of rectangle which is the set of all points sharing a common binary prefex.
@@ -189,7 +191,7 @@ mortonTileCover subdiv rect = let
     split = mapMaybe (trimMortonTile rect) . (splitMortonTile =<<)
     in iterate split [enclosingMortonTile rect] !! subdiv
 
--- | Version of @moeronTileCover@ which allows the rectangl;e to wrap around the maximum x/y coordinates (as if the space were a torus).
+-- | Version of '@'mortonTileCover'@' which allows the rectangle to wrap around the maximum x/y coordinates (as if the space were a torus).
 mortonTileCoverTorus :: Int -> Morton -> Morton -> [MortonTile]
 mortonTileCoverTorus subdiv (MortonPair ax ay) (MortonPair bx by) = let
     initrects = MortonRectSides

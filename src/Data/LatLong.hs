@@ -7,9 +7,9 @@ Description: Spatially indexed type for geographic coordinates.
 
 module Data.LatLong (
     LatLong(LatLongZ, LatLong), lat, long,
-    earthRadius, geoDistance,
+    earthRadius, geoDistance, geoSquare,
     LatLongTile, latLongTileInterval,
-    latLongCover, latLongSquareCover, withinTileSet
+    latLongTileCover, latLongTileCoverSquare, tileSetElem, withinTileSet
 ) where
 
 import Data.Morton
@@ -73,8 +73,8 @@ instance FromHttpApiData LatLong where
         [theta',phi'] <- return $ T.splitOn "," s
         Right theta <- return $ parseUrlPiece theta'
         Right phi <- return $ parseUrlPiece phi'
-        guard $ theta > -90 && theta < 90
-        guard $ phi >= -180 && phi < 180
+        guard $ theta >= -90 && theta <= 90
+        guard $ phi >= -180 && phi <= 180
         return $ LatLong theta phi
 instance ToHttpApiData LatLong where
     toUrlPiece (LatLong theta phi) = toUrlPiece theta <> "," <> toUrlPiece phi
@@ -104,7 +104,7 @@ earthRadius :: Double
 earthRadius = 6371.2e3
 
 rads x = x / 180 * pi
-degs x = x * pi / 180
+degs x = x * 180 / pi
 sindeg = sin . rads
 cosdeg = cos . rads
 
@@ -117,7 +117,7 @@ geoDistance (LatLong theta1 phi1) (LatLong theta2 phi2) = earthRadius * sigma wh
     sigma = 2 * asin (sqrt hav)
 
 -- | Calculates the corner coordinates of a square with a given center and radius (in meters).
--- Based on the Mercator projjection thus has distortion at the poles.
+-- Based on the Mercator projection thus has distortion at the poles.
 geoSquare :: LatLong -> Double -> (LatLong, LatLong)
 geoSquare (LatLong theta phi) r = let
     dtheta = degs (r / earthRadius)
@@ -138,17 +138,20 @@ latLongTileInterval :: LatLongTile -> Interval LatLong
 latLongTileInterval (LatLongTile t) = fmap LatLongZ (mortonTileBounds t)
 
 -- | Cover a rectangle (defined by its corners) by 8 tiles
-latLongCover :: LatLong -> LatLong -> [LatLongTile]
-latLongCover se nw = let
-    LatLong s e = se
-    LatLong n w = nw
+latLongTileCover :: LatLong -> LatLong -> [LatLongTile]
+latLongTileCover se nw = let
+    LatLong s _ = se
+    LatLong n _ = nw
     LatLongZ y = se
     LatLongZ x = nw
     in if s > n then [] else fmap LatLongTile (mortonTileCoverTorus 3 x y)
 
 -- | Cover a square (defined by its center and radius) by 8 tiles
-latLongSquareCover :: LatLong -> Double -> [LatLongTile]
-latLongSquareCover c r = uncurry latLongCover $ geoSquare c r
+latLongTileCoverSquare :: LatLong -> Double -> [LatLongTile]
+latLongTileCoverSquare c r = uncurry latLongTileCover $ geoSquare c r
+
+tileSetElem :: LatLong -> [LatLongTile] -> Bool
+tileSetElem p ts = or [intervalElem p (latLongTileInterval t) | t <- ts]
 
 -- | Persistent filter to query results within a tile set
 withinTileSet :: (EntityField row LatLong) -> [LatLongTile] -> Filter row
