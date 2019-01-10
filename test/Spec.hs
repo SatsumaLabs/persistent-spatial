@@ -6,7 +6,6 @@ module Main where
 import Test.Hspec
 import Test.QuickCheck
 import Test.Hspec.QuickCheck
-import Control.Lens
 import Data.Word
 import Data.List
 import Data.Maybe
@@ -48,7 +47,7 @@ prop_morton_intersect :: Interval Word32 -> Interval Word32 -> Interval Word32 -
 prop_morton_intersect a b c d = let
     rx = MortonRectSides a b
     ry = MortonRectSides c d
-    rz = intersectMorton rx ry
+    rz = intersectMortonRect rx ry
     rz' = MortonRectSides <$> (intersectInterval a c) <*> (intersectInterval b d)
     in classify (isJust rz) "overlapping" $ rz == rz'
 

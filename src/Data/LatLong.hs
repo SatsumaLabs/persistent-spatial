@@ -14,21 +14,19 @@ module Data.LatLong (
 
 import Data.Morton
 import Data.Aeson
-import Data.Monoid
 import Data.Proxy
-import Control.Monad
-import Control.Lens (Lens', Iso', iso)
-import Data.Word (Word32, Word64)
-import Debug.Trace
-import Web.HttpApiData
 import qualified Data.Text as T
+import Control.Monad
+import Control.Lens (Lens')
+import Data.Word
 import Numeric
+import Web.HttpApiData
 import Database.Persist.Sql
 
 -- | Type for storing geographic coordinates that can be spatially indexed.
 -- Each coordinate is reperesented as as 32-bit fixed point value and is also accessible as a Double through a pattern synonym.
 -- Order follows a Morton Z-order curve which can be used to search a database by tiles.
--- This works with any database capable of storing and indexing @Word64@ (and it only uses those values fitting in s 64 bit signed integer)
+-- This works with any database capable of storing and indexing 'Word64' (although this type only uses those values fitting in a 64 bit signed integer)
 newtype LatLong =
     -- | Underlying reperesentation and source of ordering for indexing
     LatLongZ Morton
@@ -50,7 +48,9 @@ latLongCoords (LatLongZ (MortonPair theta' phi')) = (theta,phi) where
     theta = (fromIntegral theta' * 360 / two32f) - 90
     phi = (fromIntegral phi' * 360 / two32f) - 180
 
--- | Pattern for accessing a coordinates as doubles
+-- | Pattern for accessing latitide and longitude coordinates as 'Double' values.
+-- This is not fully isomoprphic as latitude is clipped to ±90, longitude is wrapped mod 360 ±180,
+-- and rounding error exists due to the internal fixed-point reperesentation.
 pattern LatLong :: Double -> Double -> LatLong
 pattern LatLong theta phi <- (latLongCoords -> (theta,phi)) where
     LatLong theta phi = makeLatLong theta phi
@@ -93,9 +93,10 @@ instance PersistFieldSql LatLong where
     sqlType _ = sqlType (Proxy :: Proxy Word64)
 
 
-
+-- | Lens for latitude.
 lat :: Lens' LatLong Double
 lat f (LatLong theta phi) = fmap (\theta' -> LatLong theta' phi) (f theta)
+-- | Lens for longitude.
 long :: Lens' LatLong Double
 long f (LatLong theta phi) = fmap (\phi' -> LatLong theta phi') (f phi)
 
@@ -109,7 +110,7 @@ sindeg = sin . rads
 cosdeg = cos . rads
 
 -- | Calculate distance between two points using the Haversine formula (up to 0.5% due to the assumption of a spherical Earth).
--- Distance is returned in metres.
+-- Distance is returned in meters.
 geoDistance :: LatLong -> LatLong -> Double
 geoDistance (LatLong theta1 phi1) (LatLong theta2 phi2) = earthRadius * sigma where
     havdelta x y = sindeg ((x-y)/2) ^ (2::Int)
@@ -117,7 +118,8 @@ geoDistance (LatLong theta1 phi1) (LatLong theta2 phi2) = earthRadius * sigma wh
     sigma = 2 * asin (sqrt hav)
 
 -- | Calculates the corner coordinates of a square with a given center and radius (in meters).
--- Based on the Mercator projection thus has distortion at the poles.
+-- Based on the Mercator projection thus has distortion near the poles
+-- (within 5% for a radius at most 200km and latitude within ±70).
 geoSquare :: LatLong -> Double -> (LatLong, LatLong)
 geoSquare (LatLong theta phi) r = let
     dtheta = degs (r / earthRadius)
@@ -130,14 +132,14 @@ geoSquare (LatLong theta phi) r = let
 
 
 
--- | Reperssents a LatLong tile, which is both a rectangle and a contoguous interval in the ordering.
+-- | Represents a LatLong tile, which is both a rectangle and a contoguous interval in the ordering.
 newtype LatLongTile = LatLongTile MortonTile deriving (Eq, Read, Show)
 
--- | Gets the corners of a tile, which are also the bounds of its interval
+-- | Gets the corners of a tile, which are also the bounds of its interval in sort order.
 latLongTileInterval :: LatLongTile -> Interval LatLong
 latLongTileInterval (LatLongTile t) = fmap LatLongZ (mortonTileBounds t)
 
--- | Cover a rectangle (defined by its corners) by 8 tiles
+-- | Covers a rectangle (defined by its corners) tiles of at most its size.
 latLongTileCover :: LatLong -> LatLong -> [LatLongTile]
 latLongTileCover se nw = let
     LatLong s _ = se
@@ -146,14 +148,15 @@ latLongTileCover se nw = let
     LatLongZ x = nw
     in if s > n then [] else fmap LatLongTile (mortonTileCoverTorus x y)
 
--- | Cover a square (defined by its center and radius) by 8 tiles
+-- | Covers a square (defined by its center and radius) by tiles.
 latLongTileCoverSquare :: LatLong -> Double -> [LatLongTile]
 latLongTileCoverSquare c r = uncurry latLongTileCover $ geoSquare c r
 
+-- | Tests whether a point is contasined in a tile set.
 tileSetElem :: LatLong -> [LatLongTile] -> Bool
 tileSetElem p ts = or [intervalElem p (latLongTileInterval t) | t <- ts]
 
--- | Persistent filter to query results within a tile set
+-- | Persistent filter producing the SQL equiveland ot 'tileSetElem'.
 withinTileSet :: (EntityField row LatLong) -> [LatLongTile] -> Filter row
 withinTileSet field tiles = let
     tfilter tile = let Interval a b = latLongTileInterval tile in FilterAnd [field >=. a, field <=. b]

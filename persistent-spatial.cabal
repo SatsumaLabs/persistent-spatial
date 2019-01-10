@@ -1,7 +1,9 @@
 name:                persistent-spatial
 version:             0.1.0.0
--- synopsis:
-description:         A type for storing geographic coordinates that can be used with any database which supports Word64.
+synopsis:            Database agnostic, spatially indexed type for geographic points.
+description:         Defines type for storing geographic coordinates that can be spatially indexed by any database which supports Word64.
+                     This inxeding is implemented using a normal integer index on points repersented using a Morton Z-Order curve.
+                     Geographic regions are transformed into a covering set of tiles (contigious ranges) which can be used in a single query.
 homepage:            https://github.com/george-steel/persistent-spatial#readme
 license:             MIT
 license-file:        LICENSE
@@ -15,7 +17,7 @@ cabal-version:       >=1.10
 
 library
   hs-source-dirs:      src
-  ghc-options:         -Wall -Wcompat -Wincomplete-record-updates -Wincomplete-uni-patterns -Wredundant-constraints -Wno-unused-imports
+  ghc-options:         -Wall -Wcompat -Wincomplete-record-updates -Wincomplete-uni-patterns -Wredundant-constraints
   exposed-modules:     Data.Morton
                        Data.LatLong
   build-depends:       base >= 4.7 && < 5
@@ -36,7 +38,6 @@ test-suite tests
   build-depends:       persistent-spatial
                      , base >= 4.7 && < 5
                      , aeson
-                     , lens
                      , http-api-data
                      , text
                      , persistent

@@ -3,6 +3,7 @@
 {- |
 Module: Data.Morton
 Description: Morton reperesention of integer pairs
+Copyright: © 2018-2019 Satsuma labs
 
 Morton reperesentation of integer pairs (interleaved bits) used for creating spatial indexes.
 
@@ -12,22 +13,22 @@ Bit interleaving code is originally from the documentation of Data.Sparse by Edw
 
 module Data.Morton (
     Morton(Morton,MortonPair),
+    -- * Intervals
     Interval(..), intersectInterval, intervalElem, intervalSize, intervalSizeMorton,
-    MortonRect(MortonRect,MortonRectSides), mortonRectBounds, intersectMorton, mortonRectSize,
+    -- * Rectangles
+    MortonRect(MortonRect,MortonRectSides), mortonRectBounds, intersectMortonRect, mortonRectSize,
+    -- * Tiles
     MortonTile(..), mortonTileBounds, mortonTileRect, enclosingMortonTile, splitMortonTile, trimMortonTile,
-    mortonTileCover, mortonTileCoverTorus,
-    --mortonCover,
+    mortonTileCoverSized, mortonTileCover, mortonTileCoverTorus,
 ) where
 
 import Data.Bits
 import Data.Word
-import Control.Lens
-import Numeric.Lens
-import Numeric
 import Data.Monoid ((<>))
 import Data.Maybe
 import Data.Ord
 import Control.Monad
+import Numeric
 import Text.Read
 import Text.Read.Lex
 import Text.ParserCombinators.ReadPrec (readP_to_Prec)
@@ -38,8 +39,10 @@ zeropad :: Int -> String -> String
 zeropad n s = replicate (n - length s) '0' ++ s
 
 -- | Type implementing a Morton Z-Order Curve.
--- Stores two 'Word32' values with bits interleaved for spatial indexing by rectangular tiles which form contiguous intervals.
+-- Stores two 'Word32' values with bits interleaved.
+-- This allows for spatial indexing by rectangular tiles which form contiguous intervals.
 newtype Morton = Morton Word64 deriving (Eq, Ord, Enum)
+-- Shows value in hex.
 instance (Show Morton) where
     show (Morton m) = "Z" <> zeropad 16 (showHex m [])
 instance (Read Morton) where
@@ -78,7 +81,7 @@ pattern MortonPair x y <- (uninterleaveM -> (x,y)) where
 -- | Type for closed intervals. The second field should be greater than the first.
 data Interval a = Interval a a deriving (Eq, Show, Read, Functor)
 
--- | Returns intersection of two intervals, or Nothing if they do not overlap
+-- | Returns intersection of two intervals, or Nothing if they do not overlap.
 intersectInterval :: Ord a => Interval a -> Interval a -> Maybe (Interval a)
 intersectInterval (Interval a b) (Interval a' b') = do
     guard (a <= b)
@@ -88,14 +91,15 @@ intersectInterval (Interval a b) (Interval a' b') = do
     guard (x <= y)
     return $ Interval x y
 
+-- | Tests whether an element is contained within a given Interval.
 intervalElem :: (Ord a) => a -> Interval a -> Bool
 intervalElem x (Interval a b) = a <= x && x <= b
 
--- | returns the size of an integer interval
+-- | Returns the size of an integer interval.
 intervalSize :: (Integral a) => Interval a -> Integer
 intervalSize (Interval a b) = fromIntegral b - fromIntegral a + 1
 
--- | Returns the size of a Morton interval. This is necesary as Morton is too large to use the Enum typeclass (which has a 63 bit limit for its size functions)
+-- | Returns the size of a Morton interval.
 intervalSizeMorton :: Interval Morton -> Integer
 intervalSizeMorton (Interval (Morton a) (Morton b)) = fromIntegral b - fromIntegral a + 1
 
@@ -103,19 +107,19 @@ intervalSizeMorton (Interval (Morton a) (Morton b)) = fromIntegral b - fromInteg
 -- | Type for retangles in Morton space reperesented by upper-left and lower-right corners
 data MortonRect = MortonRect {-# UNPACK #-} !Morton {-# UNPACK #-} !Morton deriving (Eq, Show, Read)
 
--- | returns x,y bounds of a rectangle
+-- | Returns x,y bounds of a rectangle
 mortonRectBounds :: MortonRect -> (Interval Word32, Interval Word32)
 mortonRectBounds (MortonRect (MortonPair x y) (MortonPair x' y')) = (Interval x x', Interval y y')
 
--- | Construct/match rectangles by  their sides
+-- | Construct/match rectangles by their sides.
 pattern MortonRectSides :: Interval Word32 -> Interval Word32 -> MortonRect
 pattern MortonRectSides xs ys <- (mortonRectBounds -> (xs,ys)) where
     MortonRectSides (Interval x x') (Interval y y') = MortonRect (MortonPair x y) (MortonPair x' y')
 {-# COMPLETE MortonRectSides #-}
 
--- | rerurns intersection of two rectangles
-intersectMorton :: MortonRect -> MortonRect -> Maybe MortonRect
-intersectMorton (MortonRect a1 b1) (MortonRect a2 b2) = mint where
+-- | Rerurns intersection of two rectangles.
+intersectMortonRect :: MortonRect -> MortonRect -> Maybe MortonRect
+intersectMortonRect (MortonRect a1 b1) (MortonRect a2 b2) = mint where
     selx (Morton m) = m .&. 0xAAAAAAAAAAAAAAAA
     sely (Morton m) = m .&. 0x5555555555555555
     -- interleaving bits with 0 preserves ordering so bit shifts are not necesary for comparisons
@@ -125,13 +129,13 @@ intersectMorton (MortonRect a1 b1) (MortonRect a2 b2) = mint where
     by = min (sely b1) (sely b2)
     mint = if (ax <= bx) && (ay <= by) then Just (MortonRect (Morton $ ax .|. ay) (Morton $ bx .|. by)) else Nothing
 
--- | returns area of rectangle
+-- | Returns the area of a rectangle
 mortonRectSize :: MortonRect -> Integer
 mortonRectSize (MortonRect (MortonPair ax ay) (MortonPair bx by)) =
     (fromIntegral bx - fromIntegral ax + 1) * (fromIntegral by - fromIntegral ay + 1)
 
 
--- | Type for a tile in Morton space, which is a special type of rectangle which is the set of all points sharing a common binary prefex.
+-- | Type for a tile in Morton space, a special type of rectangle which is the set of all points sharing a common binary prefex.
 -- Reperesented as a point and mask length simillarly to a CIDR subnet.
 data MortonTile = MortonTile {-# UNPACK #-} !Morton {-# UNPACK #-} !Int
 instance (Show MortonTile) where
@@ -144,15 +148,15 @@ instance (Read MortonTile) where
         guard (n >= 0 && n <= 64)
         return $ MortonTile m n
 
--- | Values which reperesent the same tile compare equal even if the reperesentative points differ
+-- | Values which reperesent the same tile compare equal even if the reperesentative points differ.
 instance (Eq MortonTile) where
     a == b = mortonTileBounds a == mortonTileBounds b
 
--- | A tile sorts before its subtiles, i.e. x sorts before 0 and 1
+-- | A tile sorts immediately before its subtiles, i.e. x sorts before 0 and 1.
 instance (Ord MortonTile) where
     compare = comparing (\x -> let Interval a b = mortonTileBounds x in (a, Down b))
 
--- | returns a tile as in Interval
+-- | Returns a tile as an 'Interval'.
 mortonTileBounds :: MortonTile -> Interval Morton
 mortonTileBounds (MortonTile (Morton x) n) = let
     mask = shiftR 0xFFFFFFFFFFFFFFFF n
@@ -160,19 +164,19 @@ mortonTileBounds (MortonTile (Morton x) n) = let
     b = x .|. mask
     in Interval (Morton a) (Morton b)
 
--- | returns a tile as a rectangle
+-- | Returns a tile as a 'MortonRect'.
 mortonTileRect :: MortonTile -> MortonRect
 mortonTileRect t = let
     Interval a b = mortonTileBounds t
     in MortonRect a b
 
--- | finds the smallest tile completely enclosing a rectangle
+-- | Finds the smallest tile completely enclosing a rectangle.
 --  This can be arbitrarily large if the rectangle crosses a seam.
 enclosingMortonTile :: MortonRect -> MortonTile
 enclosingMortonTile (MortonRect (Morton a) (Morton b)) =
     let n = countLeadingZeros $ a `xor` b in MortonTile (Morton a) n
 
--- | Splits a MortonTile in half
+-- | Splits a 'MortonTile' in half. Does not split tiles containing a single value.
 splitMortonTile :: MortonTile -> [MortonTile]
 splitMortonTile t@(MortonTile _ 64) = [t]
 splitMortonTile (MortonTile (Morton m) n) = let
@@ -181,15 +185,16 @@ splitMortonTile (MortonTile (Morton m) n) = let
     high = m .|. mask
     in [MortonTile (Morton low) (n+1), MortonTile (Morton high) (n+1)]
 
--- | Trims a @MortonTile@ to the only the subtile overlapping a given rectangle
+-- | Trims a @MortonTile@ to its subtile overlapping a given rectangle.
+-- Returns 'Nothing' if the rectabgle and tile do not intersect.
 trimMortonTile :: MortonRect -> MortonTile -> Maybe MortonTile
 trimMortonTile rect t = let
     Interval a b = mortonTileBounds t
     trect = MortonRect a b
-    irect = intersectMorton rect trect
+    irect = intersectMortonRect rect trect
     in fmap enclosingMortonTile irect
 
--- | Covers a rectangle using tiles within a range of sizes (specified by their mask values)
+-- | Covers a rectangle using tiles within a range of sizes (specified by their mask values).
 mortonTileCoverSized :: Int -> Maybe Int -> MortonRect -> [MortonTile]
 mortonTileCoverSized big small rect = let
     expandTile tile@(MortonTile p m) = case small of
@@ -202,13 +207,13 @@ mortonTileCoverSized big small rect = let
 
 -- | Covers a rectangle with tiles no larger then the area to be covered (no lower size limit).
 -- The total area coverd by these tiles bas a trivial upper bound of 8 tiles the rectangle's area plus the area of its enclosing square
--- and the actual performance is usually (possibly always, although I have not proven so) significantly better.
+-- and the actual performance is usually significantly better (possibly always, although I have not proven so).
 mortonTileCover :: MortonRect -> [MortonTile]
 mortonTileCover rect = let
     big = max 0 $ 64 - integerLog2 (mortonRectSize rect)
     in mortonTileCoverSized big Nothing rect
 
--- | Version of '@'mortonTileCover'@' which allows the rectangle to wrap around the maximum x/y coordinates (as if the space were a torus).
+-- | Version of 'mortonTileCover' which allows the rectangle to wrap around the maximum x/y coordinates (as if the space were a torus).
 mortonTileCoverTorus :: Morton -> Morton -> [MortonTile]
 mortonTileCoverTorus (MortonPair ax ay) (MortonPair bx by) = let
     rsize = (fromIntegral (bx - ax) + 1) * (fromIntegral (by - ay) + 1) -- integer overflows handle wraparound case
