@@ -144,7 +144,7 @@ latLongTileCover se nw = let
     LatLong n _ = nw
     LatLongZ y = se
     LatLongZ x = nw
-    in if s > n then [] else fmap LatLongTile (mortonTileCoverTorus 3 x y)
+    in if s > n then [] else fmap LatLongTile (mortonTileCoverTorus x y)
 
 -- | Cover a square (defined by its center and radius) by 8 tiles
 latLongTileCoverSquare :: LatLong -> Double -> [LatLongTile]

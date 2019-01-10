@@ -6,14 +6,15 @@ module Main where
 import Test.Hspec
 import Test.QuickCheck
 import Test.Hspec.QuickCheck
-import Data.Word
 import Control.Lens
-import Data.Maybe
-import Numeric
+import Data.Word
 import Data.List
-import Text.Read
+import Data.Maybe
 import Data.Aeson
+import Text.Read
+import Numeric
 import Web.HttpApiData
+import Database.Persist
 
 import Data.Morton
 import Data.LatLong
@@ -72,18 +73,17 @@ mortonRectAspect (MortonRectSides ix iy) = let
     dy = intervalSize iy
     in fromIntegral (max dx dy) / fromIntegral (min dx dy)
 
-mortonRectExpansion :: Int -> MortonRect -> Integer
-mortonRectExpansion subdiv rect = let
-    tiles = mortonTileCover subdiv rect
+mortonRectExpansion :: MortonRect -> Integer
+mortonRectExpansion rect = let
+    tiles = mortonTileCover rect
     rsize = mortonRectSize rect
     tsize = sum . fmap (intervalSizeMorton . mortonTileBounds) $ tiles
-    -- need to deal with overflow here
-    in if tsize == 0 then (2 ^ 63) `div` (rsize `div` 2) else tsize `div` rsize
+    in (tsize + 1) `div` rsize
 
 prop_morton_split_8 :: MortonRect -> Property
 prop_morton_split_8 rect = let
-    ratio = mortonRectExpansion 3 rect
-    in collect ratio $ mortonRectAspect rect < 8 ==> (ratio >= 1 && ratio < 17)
+    ratio = mortonRectExpansion rect
+    in collect ratio $ mortonRectAspect rect < 8 ==> (ratio >= 1 && ratio <= 16)
 
 badSquare = MortonRect (Morton 0x0fffFfffFfffFfff) (Morton 0xc000000000000000)
 
@@ -100,6 +100,11 @@ prop_latlong_json p = let
 prop_latlong_http :: LatLong -> Bool
 prop_latlong_http p = let
     mp = parseUrlPiece (toUrlPiece p)
+    in mp == Right p
+
+prop_latlong_persist :: LatLong -> Bool
+prop_latlong_persist p = let
+    mp = fromPersistValue (toPersistValue p)
     in mp == Right p
 
 prop_geo_triangle :: LatLong -> LatLong -> LatLong -> Bool
@@ -144,12 +149,12 @@ main = hspec . modifyMaxSuccess (const 10000) $ do
         prop "rectangle intersection mathes interval intersection" prop_morton_intersect
         prop "tile Read instance works" prop_morton_tile_parse
         prop "tile size (both definitions) matches mask value" prop_morton_tile_bounds
-        it   "pathological square expands at most 11-fold in 4-division" $ mortonRectExpansion 2 badSquare `shouldSatisfy` (< 11)
-        it   "pathological square expands at most 6-fold in 8-division" $ mortonRectExpansion 3 badSquare `shouldSatisfy` (< 6)
-        prop "rectangle expansion in 8 tile coder (eccentricity limit 8, floored expansion collected)" prop_morton_split_8
+        it   "pathological square expands at most 6-fold" $ mortonRectExpansion badSquare `shouldSatisfy` (< 6)
+        modifyMaxSuccess (const 100000) $ prop "rectangle expansion tile cover (eccentricity limit 8, floored expansion collected)" prop_morton_split_8
     describe "Data.LatLong" $ do
         prop "Aeson instances work" prop_latlong_json
         prop "HttpApiData instances work" prop_latlong_http
+        prop "PersistField instance works" prop_latlong_persist
         prop "geoDistance obeys triangle inequality" prop_geo_triangle
         prop "geoSquare corners within tolerance (% error collected), 10m < r < 200km, 70S < lat < 70N" prop_square_corner_dist
         prop "tile covers contain all points in square" prop_tiles_cover_points

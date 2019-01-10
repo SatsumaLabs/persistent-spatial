@@ -26,11 +26,13 @@ import Numeric.Lens
 import Numeric
 import Data.Monoid ((<>))
 import Data.Maybe
+import Data.Ord
 import Control.Monad
 import Text.Read
 import Text.Read.Lex
 import Text.ParserCombinators.ReadPrec (readP_to_Prec)
 import Text.ParserCombinators.ReadP
+import Math.NumberTheory.Logarithms
 
 zeropad :: Int -> String -> String
 zeropad n s = replicate (n - length s) '0' ++ s
@@ -141,8 +143,14 @@ instance (Read MortonTile) where
         n <- readDecP
         guard (n >= 0 && n <= 64)
         return $ MortonTile m n
+
+-- | Values which reperesent the same tile compare equal even if the reperesentative points differ
 instance (Eq MortonTile) where
     a == b = mortonTileBounds a == mortonTileBounds b
+
+-- | A tile sorts before its subtiles, i.e. x sorts before 0 and 1
+instance (Ord MortonTile) where
+    compare = comparing (\x -> let Interval a b = mortonTileBounds x in (a, Down b))
 
 -- | returns a tile as in Interval
 mortonTileBounds :: MortonTile -> Interval Morton
@@ -181,24 +189,31 @@ trimMortonTile rect t = let
     irect = intersectMorton rect trect
     in fmap enclosingMortonTile irect
 
--- | Covers a rectangle with 2^n tiles (where n is the first parameter).
--- The subdivision passes shoudl be at least 2 as otherwise the returned tiles can be arbitrarily larger than the rectangle to to bad seam placement.
--- By subdividing twice we can cover any square with 4 tiles of total srea to most 11 times that of the square, doing significantly better than that in most cases.
--- By subdividing 3 times we can improve out result for a square to a 6-fold expansion and can also handle more eccentric cases.
--- With an eccentricity of 8, there is a limit of 17-fold expansion.
-mortonTileCover :: Int -> MortonRect -> [MortonTile]
-mortonTileCover subdiv rect = let
-    split = mapMaybe (trimMortonTile rect) . (splitMortonTile =<<)
-    in iterate split [enclosingMortonTile rect] !! subdiv
+-- | Covers a rectangle using tiles within a range of sizes (specified by their mask values)
+mortonTileCoverSized :: Int -> Maybe Int -> MortonRect -> [MortonTile]
+mortonTileCoverSized big small rect = let
+    expandTile tile@(MortonTile p m) = case small of
+        Just s | m > s -> MortonTile p s
+        _              -> tile
+    subdiv tile@(MortonTile _ m)
+        | m >= big = [expandTile tile]
+        | otherwise = (>>= subdiv) . mapMaybe (trimMortonTile rect) . splitMortonTile $ tile
+    in subdiv (enclosingMortonTile rect)
+
+-- | Covers a rectangle with tiles no larger then the area to be covered (no lower size limit).
+-- The total area coverd by these tiles bas a trivial upper bound of 8 tiles the rectangle's area plus the area of its enclosing square
+-- and the actual performance is usually (possibly always, although I have not proven so) significantly better.
+mortonTileCover :: MortonRect -> [MortonTile]
+mortonTileCover rect = let
+    big = max 0 $ 64 - integerLog2 (mortonRectSize rect)
+    in mortonTileCoverSized big Nothing rect
 
 -- | Version of '@'mortonTileCover'@' which allows the rectangle to wrap around the maximum x/y coordinates (as if the space were a torus).
-mortonTileCoverTorus :: Int -> Morton -> Morton -> [MortonTile]
-mortonTileCoverTorus subdiv (MortonPair ax ay) (MortonPair bx by) = let
+mortonTileCoverTorus :: Morton -> Morton -> [MortonTile]
+mortonTileCoverTorus (MortonPair ax ay) (MortonPair bx by) = let
+    rsize = (fromIntegral (bx - ax) + 1) * (fromIntegral (by - ay) + 1) -- integer overflows handle wraparound case
+    big = max 0 $ 64 - integerLog2 rsize
     initrects = MortonRectSides
         <$> (if bx >= ax then [Interval ax bx] else [Interval ax maxBound, Interval minBound bx])
         <*> (if by >= ay then [Interval ay by] else [Interval ay maxBound, Interval minBound by])
-    subdiv' = case length initrects of
-        4 | subdiv >= 2 -> subdiv - 2
-        2 | subdiv >= 1 -> subdiv - 1
-        _               -> subdiv
-    in initrects >>= mortonTileCover subdiv'
+    in initrects >>= mortonTileCoverSized big Nothing
