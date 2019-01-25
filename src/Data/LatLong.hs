@@ -3,11 +3,23 @@
 {-|
 Module: Data.LatLong
 Description: Spatially indexed type for geographic coordinates.
+Copyright: © 2018-2019 Satsuma labs
+
+Defines a type for georgraphic coordinates that can be spatially indexed by any database supporting 64 bit integer values.
+This indexing works by reperesenting points using a 'Morton' Z-Order curce, with each coordinate reperesented as a 32-bit fixed-point value
+which then have their bits interleaved into a 64-bit integer to the internal reperesentation.
+
+Taking binary prefixes of these values divides the globe into a hierarchy of rectangular tiles (repereseteh here as 'LatLongTile' objects),
+each of which is a contiguous interval when points are ordered according to their integer reperesentations.
+As any geographic region can be covered by a small number of tiles of simillar size, this provides an easy to loop up data for specific reguions.
+Instances and a filter for persistent are provided for this purpose.
+
 -}
 
 module Data.LatLong (
     LatLong(LatLongZ, LatLong), lat, long,
     earthRadius, geoDistance, geoSquare,
+    -- * Tiles
     LatLongTile, latLongTileInterval,
     latLongTileCover, latLongTileCoverSquare, tileSetElem, withinTileSet
 ) where
@@ -23,7 +35,7 @@ import Numeric
 import Web.HttpApiData
 import Database.Persist.Sql
 
--- | Type for storing geographic coordinates that can be spatially indexed.
+-- | Type for storing geographic coordinates that can be spatially indexed ('Morton' ordering).
 -- Each coordinate is reperesented as as 32-bit fixed point value and is also accessible as a Double through a pattern synonym.
 -- Order follows a Morton Z-order curve which can be used to search a database by tiles.
 -- This works with any database capable of storing and indexing 'Word64' (although this type only uses those values fitting in a 64 bit signed integer)
@@ -104,9 +116,13 @@ long f (LatLong theta phi) = fmap (\phi' -> LatLong theta phi') (f phi)
 earthRadius :: Double
 earthRadius = 6371.2e3
 
+rads :: Double->Double
 rads x = x / 180 * pi
+degs :: Double->Double
 degs x = x * 180 / pi
+sindeg :: Double->Double
 sindeg = sin . rads
+cosdeg :: Double->Double
 cosdeg = cos . rads
 
 -- | Calculate distance between two points using the Haversine formula (up to 0.5% due to the assumption of a spherical Earth).
