@@ -10,10 +10,11 @@ license-file:        LICENSE
 author:              George Steel
 maintainer:          george.steel@gmail.com
 copyright:           2019 Satsuma Labs
-category:            Web
+category:            Database, Geography
 build-type:          Simple
-extra-source-files:  README.md
 cabal-version:       >=1.10
+extra-source-files:  README.md
+                   , CHANGELOG.md
 
 library
   hs-source-dirs:      src
