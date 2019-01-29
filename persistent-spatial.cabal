@@ -2,8 +2,8 @@ name:                persistent-spatial
 version:             0.1.0.0
 synopsis:            Database agnostic, spatially indexed type for geographic points.
 description:         Defines type for storing geographic coordinates that can be spatially indexed by any database which supports Word64.
-                     This inxeding is implemented using a normal integer index on points repersented using a Morton Z-Order curve.
-                     Geographic regions are transformed into a covering set of tiles (contigious ranges) which can be used in a single query.
+                     This indexing is implemented using a normal integer index on points represented using a Morton Z-Order curve.
+                     Geographic regions are transformed into a covering set of tiles (contiguous ranges) which can be used in a single query.
 homepage:            https://github.com/SatsumaLabs/persistent-spatial#readme
 license:             MIT
 license-file:        LICENSE
